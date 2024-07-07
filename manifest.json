@@ -21,5 +21,9 @@
       "js": ["content.js"]
     }
   ],
-  "permissions": ["activeTab", "tabs"]
+  "permissions": ["activeTab", "tabs", "webRequest"],
+  "host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ]
 }
