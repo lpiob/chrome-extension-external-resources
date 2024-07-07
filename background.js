@@ -18,17 +18,16 @@ async function getTabUrlById(tabId) {
     if (tab && tab.url) {
       return tab.url;
     } else {
-      throw new Error("Tab not found or does not have a URL.");
+      return null;
     }
   } catch (error) {
-    console.error("Error getting tab URL:", error);
-    return null; // Or handle the error differently
+    return null; 
   }
 }
 
 // Listen for web requests
-//chrome.webRequest.onBeforeRequest.addListener(
-chrome.webRequest.onBeforeSendHeaders.addListener(
+chrome.webRequest.onBeforeRequest.addListener(
+//chrome.webRequest.onBeforeSendHeaders.addListener(
   async function(details) {
     if (details.tabId === -1) return; // Ignore non-tab requests
 
@@ -37,8 +36,16 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
     }
 
     const url = new URL(details.url);
-    const documentUrl = new URL(await getTabUrlById(details.tabId));
+    const oldHref = await getTabUrlById(details.tabId);
+    if (!oldHref) return;
+    const documentUrl = new URL(oldHref);
 
+    // skip exit events from previous page
+    // this may skip our events in specific cases (an exit event from an iframe)
+    if (details.documentLifecycle && details.documentLifecycle === "pending_deletion" &&
+      details.initiator && new URL(details.initiator).hostname !==documentUrl.hostname) return;
+
+    // register requests that don't match hostname (i.e. are external)
     if (url.hostname !== documentUrl.hostname) {
       tabData[details.tabId].resources.add(details.url);
       updateBadge(details.tabId);
@@ -68,8 +75,13 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 // Listen for tab updates
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'loading') {
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'loading' && changeInfo.url) {
+    //const oldUrl = new URL(await getTabUrlById(tabId));
+    //if (oldUrl.hostname === new URL(changeInfo.url).hostname) return;
+    //console.log("resetting data for " + tabId);
+    //console.log(new URL(changeInfo.url).hostname)
+    //console.log(oldUrl.hostname);
     // Reset data for this tab
     tabData[tabId] = { resources: new Set(), errors: {} };
     updateBadge(tabId);
