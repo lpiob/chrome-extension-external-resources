@@ -1,54 +1,111 @@
-let failedResources = [];
+let tabData = {};
 
-chrome.webRequest.onErrorOccurred.addListener(
-  function(details){
-    if (details.error && details.error !== 'net::ERR_ABORTED' && details.error !== 'net::ERR_BLOCKED_BY_ORB' && details.error !== 'net::ERR_FAILED' && details.error !== 'net::ERR_CACHE_MISS') {
-      console.error(JSON.stringify(details));
-      if (!failedResources[details.tabId]) {
-        failedResources[details.tabId] = new Set();
-      }
-      failedResources[details.tabId].add(details.url);
+// List of error codes we're interested in
+const errorCodesOfInterest = [
+  'net::ERR_NAME_NOT_RESOLVED',
+  'net::ERR_NAME_RESOLUTION_FAILED',
+  'net::ERR_CONNECTION_REFUSED',
+  'net::ERR_CONNECTION_RESET',
+  'net::ERR_CONNECTION_FAILED',
+  'net::ERR_CONNECTION_TIMED_OUT',
+  'net::ERR_ADDRESS_UNREACHABLE',
+  'net::ERR_DNS_TIMED_OUT'
+];
+
+async function getTabUrlById(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab && tab.url) {
+      return tab.url;
+    } else {
+      throw new Error("Tab not found or does not have a URL.");
+    }
+  } catch (error) {
+    console.error("Error getting tab URL:", error);
+    return null; // Or handle the error differently
+  }
+}
+
+// Listen for web requests
+//chrome.webRequest.onBeforeRequest.addListener(
+chrome.webRequest.onBeforeSendHeaders.addListener(
+  async function(details) {
+    if (details.tabId === -1) return; // Ignore non-tab requests
+
+    if (!tabData[details.tabId]) {
+      tabData[details.tabId] = { resources: new Set(), errors: [] };
+    }
+
+    const url = new URL(details.url);
+    const documentUrl = new URL(await getTabUrlById(details.tabId));
+
+    if (url.hostname !== documentUrl.hostname) {
+      tabData[details.tabId].resources.add(details.url);
       updateBadge(details.tabId);
     }
   },
-  {urls: ["<all_urls>"]}
+  { urls: ["<all_urls>"] }
+);
+
+// Listen for errors
+chrome.webRequest.onErrorOccurred.addListener(
+  details => {
+    if (details.tabId === -1) return; // Ignore non-tab errors
+
+    if (errorCodesOfInterest.includes(details.error)) {
+      if (!tabData[details.tabId]) {
+        tabData[details.tabId] = { resources: new Set(), errors: {} };
+      }
+      tabData[details.tabId].errors[details.url] = details.error;
+      updateBadge(details.tabId);
+    }
+  },
+  { urls: ["<all_urls>"] }
 );
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  delete failedResources[tabId];
+  delete tabData[tabId];
 });
 
 // Listen for tab updates
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'complete') {
-    chrome.tabs.sendMessage(tabId, { action: "getExternalResourceCount" }, (response) => {
-      if (!chrome.runtime.lastError && response && response.externalResourceCount !== undefined) {
-        updateBadge(tabId, response.externalResourceCount);
-      }
-    });
+  if (changeInfo.status === 'loading') {
+    // Reset data for this tab
+    tabData[tabId] = { resources: new Set(), errors: {} };
+    updateBadge(tabId);
   }
 });
 
-// Listen for messages from content script
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === "updateBadge") {
-    updateBadge(sender.tab.id, request.count);
-  }
-});
+// Update badge
+function updateBadge(tabId) {
+  if (!tabData[tabId]) return;
 
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === "getFailedResources") {
-    sendResponse({ failedResources: Array.from(failedResources[sender.tab.id] || []) });
-  }
-});
+  const resourceCount = tabData[tabId].resources.size;
+  const errorCount = Object.keys(tabData[tabId].errors).length;
 
+  chrome.action.setBadgeText({ 
+    text: resourceCount.toString(), 
+    tabId: tabId 
+  });
 
-// update badge
-function updateBadge(tabId, count) {
-  const failedCount = failedResources[tabId] ? failedResources[tabId].size : 0;
-  const badgeText = failedCount > 0 ? `${failedCount}!` : count.toString();
-  const badgeColor = failedCount > 0 ? "#FF0000" : "#4688F1"; 
-  chrome.action.setBadgeText({ text: badgeText, tabId: tabId });
-  chrome.action.setBadgeBackgroundColor({ color: badgeColor, tabId: tabId });
+  chrome.action.setBadgeBackgroundColor({
+    color: errorCount > 0 ? '#FF0000' : '#4CAF50',
+    tabId: tabId
+  });
 }
 
+// Listen for messages from popup or content script
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'getResourceData') {
+    const tabId = sender.tab ? sender.tab.id : request.tabId;
+    if (tabData[tabId]) {
+      sendResponse({
+        resources: Array.from(tabData[tabId].resources),
+        errors: tabData[tabId].errors
+      });
+    } else {
+      sendResponse({ resources: [], errors: {} });
+    }
+  }
+  return true; // Keeps the message channel open for asynchronous responses
+});
