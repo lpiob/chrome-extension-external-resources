@@ -15,24 +15,19 @@ const errorCodesOfInterest = [
 async function getTabUrlById(tabId) {
   try {
     const tab = await chrome.tabs.get(tabId);
-    if (tab && tab.url) {
-      return tab.url;
-    } else {
-      return null;
-    }
+    return tab && tab.url ? tab.url : null;
   } catch (error) {
-    return null; 
+    console.error(`Error getting URL for tab ${tabId}:`, error);
+    return null;
   }
 }
 
-// Listen for web requests
 chrome.webRequest.onBeforeRequest.addListener(
-//chrome.webRequest.onBeforeSendHeaders.addListener(
   async function(details) {
     if (details.tabId === -1) return; // Ignore non-tab requests
 
     if (!tabData[details.tabId]) {
-      tabData[details.tabId] = { resources: new Set(), errors: [] };
+      tabData[details.tabId] = { resources: new Set(), errors: {} };
     }
 
     const url = new URL(details.url);
@@ -41,9 +36,10 @@ chrome.webRequest.onBeforeRequest.addListener(
     const documentUrl = new URL(oldHref);
 
     // skip exit events from previous page
-    // this may skip our events in specific cases (an exit event from an iframe)
-    if (details.documentLifecycle && details.documentLifecycle === "pending_deletion" &&
-      details.initiator && new URL(details.initiator).hostname !==documentUrl.hostname) return;
+    if (details.documentLifecycle === "pending_deletion" &&
+        details.initiator && new URL(details.initiator).hostname !== documentUrl.hostname) {
+      return;
+    } 
 
     // register requests that don't match hostname (i.e. are external)
     if (url.hostname !== documentUrl.hostname) {
@@ -89,22 +85,28 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 });
 
 // Update badge
-function updateBadge(tabId) {
-  if (!tabData[tabId]) return;
+const updateBadge = (() => {
+  let timeoutId;
+  return (tabId) => {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => {
+      if (!tabData[tabId]) return;
 
-  const resourceCount = tabData[tabId].resources.size;
-  const errorCount = Object.keys(tabData[tabId].errors).length;
+      const resourceCount = tabData[tabId].resources.size;
+      const errorCount = tabData[tabId].errors.length;
 
-  chrome.action.setBadgeText({ 
-    text: resourceCount.toString(), 
-    tabId: tabId 
-  });
+      chrome.action.setBadgeText({ 
+        text: resourceCount.toString(), 
+        tabId: tabId 
+      });
 
-  chrome.action.setBadgeBackgroundColor({
-    color: errorCount > 0 ? '#FF0000' : '#4CAF50',
-    tabId: tabId
-  });
-}
+      chrome.action.setBadgeBackgroundColor({
+        color: errorCount > 0 ? '#FF0000' : '#4CAF50',
+        tabId: tabId
+      });
+    }, 100); // Debounce for 100ms
+  };  
+})();
 
 // Listen for messages from popup or content script
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
